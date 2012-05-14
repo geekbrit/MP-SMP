@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+    <title>Massively Parallel State Machine</title>
+    <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+
+<body>
+    <header>
+        <h1>Massively Parallel State Machine Protocol<br>[MP-SMP]</h1>
+        <i>Peter Maloy, geekbrit@gmail.com, May 2012</i>
+        <p>
+            This document describes the capabilities and behaviour of a method for handling multiple
+            concurrent processing tasks that rely on asynchronous events. The processing tasks may
+            be handled within a single processing unit or across multiple processing units. Within
+            a Processing Unit MP-SMP is single-threaded; a Processing Unit may therefore be an
+            RTOS Task, a POSIX-like thread, a lightweight process, or code running on a processor core
+            that is not running code that has preemption capability.
+        </p>
+        <p>
+            MP-SMP is based upon the concept that complex computational engines interacting with
+            external systems spend a significant amount of time waiting for events during which tasks
+            that need to be carried out are blocked. MP-SMP is therefore an organizational method
+            that shares available processing capacity efficiently across multiple Tasks that are in
+            different stages of completion.
+        </p>
+        <p>
+            The intention is that this methodology should be implementable in any programming
+            language that supports the functional requirements of the protocol, and may be run on any
+            suitable operating system or RTOS, or indeed with no operating system at all, subject to
+            certain limitations (for example, the implemented worker/handler functions would then have to run
+            to completion within acceptable times and, be non-blocking).
+        </p>
+        <p>
+            A primary objective for this protocol is scalability and portability; it should be possible
+            to implement an MP-SMP system on a single microcontroller, or across a network of multi-core
+            servers.
+        </p>
+        <p>
+            It is intended that it should be functionally correct for each MP-SMP State Handler function
+            to be written as if it is in a single-threaded environment - and therefore able to be tested
+            within a simple test framework. The management of resource availability and Task ownership will be managed entirely within the
+            MP-SMP executive.
+        </p>
+    </header>
+    <figure>
+        <img src='block_diagram.png' alt='simplified MP-SMP block diagram'>
+        <figcaption>Fig1. - A single MP-SMP Processing Unit. Note that there would typically be multiple States in each Processing Unit</figcaption>
+    </figure>
+    
+    <article>
+        <header>
+            <h1>MP-SMP Protocol</h1>
+        </header>
+        <section>
+            <header>
+                <h1>States</h1>
+            </header>
+            <p>
+                To create an MP-SMP system, the application developer will instantiate one or more States,
+                and implement event handlers.
+            </p>
+            <p>
+                Each state can be viewed as a
+                semi-autonomous event-driven engine that consists of:
+                <ul>
+                    <li>a Queue - containing Tasks to be carried out. Tasks will be carried out in chronological
+                    order, with these exceptions:
+                    <uL>
+                        <li>If a Task is blocked because of Resource unavailability, the State engine can examine
+                        later Tasks in the Queue to see if they can be processed.</li>
+                        <li>A new incoming Event that references a particular Task will cause that Task to be
+                        processed by the State engine, after which it will perform a traverse of its Queue to see
+                        if any other Task can be processed at this time.
+                        </li>
+                    </uL>
+                    </li>
+                    <li>a Dispatcher. When triggered by an incoming event, this passes the referenced Task to the
+                    appropriate Handler. Any incoming event may (at the developer's discretion) be used to trigger
+                    a general poll of all queued Tasks to see if they can be processed further.</li>
+                    <li>one or more Handlers - functions that will perform a specific operation on a Task when it
+                    is in the State, depending on input events and the Task's internal state. In general, each handler
+                    will start with a set of gating resource requirements such that a Queued Task can quickly be polled
+                    to see if it has the resources available to be processed.</li>
+                </ul>
+            </p>
+            <p>
+                The primary purpose of States within MP-SMP is to manage asynchronicity. Whenever a Task
+                requires a resource or an external operation that would necessitate a blocking wait, it is instead
+                placed in the Queue of a State until that resource becomes available or the external
+                operation has completed. This allows a high degree of lock-free operation, since shared
+                resources can operate single-threaded within a State handler.
+            </p>
+            <p>
+                A secondary characteristic of States is to encapsulate related functionality and to provide
+                clean interfaces and decoupling between sections of a complex system. Each State is responsible
+                for a bound set of operations on a Task, and those operations are driven by data held within
+                the Task itself. There may be gating parameters that determine which Tasks from the Queue can be
+                operated on at a given time, but these are passed between States in the form of Infrastructure
+                Messages.
+            </p>
+            <p>
+                The absence of shared global data is intended to allow States to be migrated across multiple
+                processing units, which may or may not share physical address space.
+            </p>
+            <h2>State Scope</h2>
+            <p>
+                In the simplest form, a State will exist on a single processing unit, but it is allowable for
+                a State to be instantiated on multiple processing units, each of which subscribe to a State
+                Router that allocates Tasks to balance the load across processing units.<br><b>[RabbitMQ or similar?]</b>
+            </p>
+        </section>
+        <section>
+            <header>
+                <h1>Events</h1>
+            </header>
+            <p>
+                Outside the scope of an individual State, MP-SMP is entirely event-driven.
+            </p>
+            <p>
+                The primary source of Events arise from incoming data - the receipt of a new Task over
+                a network interface; a new frame in a data transfer; an ADC conversion completion interrupt;
+                in an interactive system a mouse click or scroll event; notification of a resource availability
+                from another processing unit.
+            </p>
+            <p>
+                A State engine's dispatcher remains idle until it receives an event, which may be to tell it that
+                a new Task has been placed in its Queue, or that some resource within the system has changed that
+                may allow processing to continue for one or more Tasks that are currently blocked within the State's
+                Queue.
+            </p>
+            <p>
+                An Event contains:
+                <ul>
+                    <li>A Task handle (may be EVENT_BROADCAST if not Task-specific)</li>
+                    <li>An Event code</li>
+                    <li>An Event target</li>
+                </ul>
+                The event target will be a State - any given event code can be handled by only one State,
+                so as soon as each event is received by a Processing Unit, it is mapped onto the recipient State.
+            </p>
+            <p>
+                Remember that a State may be distributes across multiple Processing Units, so the MP-SMP system
+                must ensure that the event is broadcast to all instances of the State. Instances of the State
+                that do not contain the referenced Task can ignore the Event.
+            </p>
+        </section>
+        <section>
+            <header>
+                <h1>Tasks</h1>
+            </header>
+            <p>
+                In MP-SMP, a Task should not be confused with an Operating System Task. Instead, it represents
+                operation that the system has to perform. An example might be a web page request, which might go
+                through a number of states:
+                <ul>
+                    <li>URI and parameters extraction &amp; validation</li>
+                    <li>Data selection and retrieval</li>
+                    <li>Template engine &amp; data formatting</li>
+                    <li>HTTP transfer</li>
+                </ul>
+                These are handled by separate States, possibly in different threads and different cores, but all
+                form a single Task, and all actions must be completed in order to complete the Task.
+            </p>
+            <p>
+                MP-SMP is a data-driven protocol in that a system can be thought of as a series of
+                data processing engines that work on blocks of data that represent the progress of
+                one Task that the system must carry out.
+            </p>
+            <p>
+                The general form of a Task descriptor is:
+                <ul>
+                    <li>Handle: System-wide unique identifier (reallocatable at the end of lifecycle
+                    of a previous task in resource-constrained systems)</li>
+                    <li>Type: System-specific information, allows easy routing to appropriate State Handlers</li>
+                    <li>Payload: Task-specific data</li>
+                    <li>StateData: Scratchpad area for State - this data is invalidate as soon as the Task
+                    moves from one State to another, and allows the State to store temporary data within the Task
+                    descriptor rather than having to perform dynamic memory operations as Tasks enter and leave its
+                    Queue. Every State will see the scratchpad size and a valid/not valid flag in the StateData
+                    header; the rest of the StateData block is theirs to use as required.</li>
+                </ul>
+                <b>Note:</b> The StateData implementation is less critical for programming languages that
+                perform automatic data allocation and garbage collection than, for example C/C++.
+            </p>
+         
+        </section>
+        <section>
+            <header>
+                <h1>Infrastructure</h1>
+            </header>
+            <h2>Layer 1: Tasks</h2>
+            <p>
+                Ownership of Tasks is strictly controlled; by design, within a processing unit a Task
+                may appear in one and only one State. It is however permissable to transfer ActionRequests
+                to other processing units to allow parallelization of operations related to a given Task.
+            </p>
+            <p>
+                <b>Important</b> This requires the current State to maintain response counters to ensure correct
+                Map&rarr;Reduce operation. These response counters should probably be instantiated in the Task
+                StateData field.
+            </p>
+            <h2>Layer 2: State Infrastructure</h2>
+            <p>
+                A State engine may be able to process all Tasks assigned to its Queue, or its progress
+                may be gated by an external factor, such as data availability in a buffer. For this reason,
+                there is a second layer of messaging. The State Infrastructure allows resource availability
+                and error conditions to be broadcast around the distributed MP-SMP system independently of
+                Tasks.
+            </p>
+            <h2>Messages</h2>
+            <p>
+                Where messages cross processing unit boundaries, they are sent as BSON-encoded packets.
+                This removes the majority of problems associated with software versions (data is sent as
+                name:type:value tuples) and allows operation across processing units that do not have
+                access to share memory.
+            </p>
+        </section>
+    </article>
+
+</body>
+</html>
